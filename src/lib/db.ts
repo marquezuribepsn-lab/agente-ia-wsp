@@ -66,10 +66,70 @@ function getDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_outbox_pending
       ON outbox(sent, created_at);
+
+    CREATE TABLE IF NOT EXISTS documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL,
+      uploaded_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS document_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_id INTEGER NOT NULL REFERENCES documents(id),
+      chunk_index INTEGER NOT NULL,
+      content TEXT NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+      content,
+      content='document_chunks',
+      content_rowid='id'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS document_chunks_ai AFTER INSERT ON document_chunks BEGIN
+      INSERT INTO document_chunks_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS document_chunks_ad AFTER DELETE ON document_chunks BEGIN
+      INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content) VALUES('delete', old.id, old.content);
+    END;
+
+    CREATE TABLE IF NOT EXISTS escalations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+      question TEXT NOT NULL,
+      status TEXT CHECK(status IN ('pending','answered')) NOT NULL DEFAULT 'pending',
+      answer TEXT,
+      owner_message_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      answered_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_escalations_pending
+      ON escalations(status, created_at);
   `);
+
+  // Migración: conversations.memory no existía en versiones anteriores del
+  // schema. CREATE TABLE IF NOT EXISTS no agrega columnas a una tabla ya
+  // creada, así que hay que chequear y agregarla a mano si falta.
+  ensureColumn(db, "conversations", "memory", "memory TEXT");
 
   instance = db;
   return db;
+}
+
+function ensureColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  columnDdl: string
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDdl}`);
+  }
 }
 
 export type ConversationMode = "AI" | "HUMAN";
@@ -82,6 +142,8 @@ export interface Conversation {
   mode: ConversationMode;
   last_message_at: number | null;
   created_at: number;
+  /** Datos aprendidos sobre este cliente en particular (preferencias, compras previas, etc). */
+  memory: string | null;
 }
 
 export interface ConversationWithPreview extends Conversation {
@@ -274,7 +336,226 @@ export function deleteConversation(id: number): void {
     db.prepare(
       "DELETE FROM outbox WHERE conversation_id = ? AND sent = 0"
     ).run(cid);
+    db.prepare("DELETE FROM escalations WHERE conversation_id = ?").run(cid);
     db.prepare("DELETE FROM conversations WHERE id = ?").run(cid);
   });
   txn(id);
+}
+
+// ---------------------------------------------------------------------------
+// Memoria por cliente
+// ---------------------------------------------------------------------------
+
+export function appendConversationMemory(
+  conversationId: number,
+  fact: string
+): void {
+  const db = getDb();
+  const current = db
+    .prepare("SELECT memory FROM conversations WHERE id = ?")
+    .get(conversationId) as { memory: string | null } | undefined;
+  if (!current) return;
+
+  const trimmedFact = fact.trim();
+  if (!trimmedFact) return;
+
+  // Evita duplicar el mismo dato si el LLM lo repite en charlas sucesivas.
+  const existingLines = (current.memory ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (existingLines.includes(trimmedFact)) return;
+
+  const next = [...existingLines, trimmedFact].join("\n");
+  db.prepare("UPDATE conversations SET memory = ? WHERE id = ?").run(
+    next,
+    conversationId
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Base de conocimiento (archivos subidos + búsqueda de texto completo)
+// ---------------------------------------------------------------------------
+
+export interface DocumentRecord {
+  id: number;
+  filename: string;
+  uploaded_at: number;
+  chunk_count: number;
+}
+
+export interface KnowledgeSearchResult {
+  content: string;
+  filename: string;
+  document_id: number;
+}
+
+export function insertDocument(filename: string, chunks: string[]): number {
+  const db = getDb();
+  const txn = db.transaction((fname: string, parts: string[]) => {
+    const info = db
+      .prepare("INSERT INTO documents (filename) VALUES (?)")
+      .run(fname);
+    const documentId = info.lastInsertRowid as number;
+
+    const insertChunk = db.prepare(
+      "INSERT INTO document_chunks (document_id, chunk_index, content) VALUES (?, ?, ?)"
+    );
+    parts.forEach((content, index) => {
+      insertChunk.run(documentId, index, content);
+    });
+
+    return documentId;
+  });
+
+  return txn(filename, chunks);
+}
+
+export function listDocuments(): DocumentRecord[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        d.id,
+        d.filename,
+        d.uploaded_at,
+        (SELECT COUNT(*) FROM document_chunks dc WHERE dc.document_id = d.id) AS chunk_count
+      FROM documents d
+      ORDER BY d.uploaded_at DESC
+      `
+    )
+    .all() as DocumentRecord[];
+}
+
+export function deleteDocument(id: number): void {
+  const db = getDb();
+  const txn = db.transaction((documentId: number) => {
+    db.prepare("DELETE FROM document_chunks WHERE document_id = ?").run(
+      documentId
+    );
+    db.prepare("DELETE FROM documents WHERE id = ?").run(documentId);
+  });
+  txn(id);
+}
+
+// Convierte la pregunta del cliente en una query FTS5 segura: cada palabra
+// entre comillas (evita que caracteres especiales de FTS5 rompan la
+// consulta) unidas con OR, para maximizar recall.
+function buildFtsQuery(text: string): string | null {
+  const words = text
+    .toLowerCase()
+    .match(/[\p{L}\p{N}]+/gu)
+    ?.filter((w) => w.length > 1);
+  if (!words || words.length === 0) return null;
+  return words.map((w) => `"${w}"`).join(" OR ");
+}
+
+export function searchKnowledgeBase(
+  query: string,
+  limit = 5
+): KnowledgeSearchResult[] {
+  const ftsQuery = buildFtsQuery(query);
+  if (!ftsQuery) return [];
+
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        dc.content AS content,
+        d.filename AS filename,
+        d.id AS document_id
+      FROM document_chunks_fts
+      JOIN document_chunks dc ON dc.id = document_chunks_fts.rowid
+      JOIN documents d ON d.id = dc.document_id
+      WHERE document_chunks_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+      `
+    )
+    .all(ftsQuery, limit) as KnowledgeSearchResult[];
+}
+
+// ---------------------------------------------------------------------------
+// Escalamiento: preguntas que el bot no supo responder
+// ---------------------------------------------------------------------------
+
+export type EscalationStatus = "pending" | "answered";
+
+export interface Escalation {
+  id: number;
+  conversation_id: number;
+  question: string;
+  status: EscalationStatus;
+  answer: string | null;
+  owner_message_id: string | null;
+  created_at: number;
+  answered_at: number | null;
+}
+
+export function createEscalation(
+  conversationId: number,
+  question: string,
+  ownerMessageId: string | null
+): Escalation {
+  const db = getDb();
+  const info = db
+    .prepare(
+      "INSERT INTO escalations (conversation_id, question, owner_message_id) VALUES (?, ?, ?)"
+    )
+    .run(conversationId, question, ownerMessageId);
+  return db
+    .prepare("SELECT * FROM escalations WHERE id = ?")
+    .get(info.lastInsertRowid as number) as Escalation;
+}
+
+export function findEscalationByOwnerMessageId(
+  ownerMessageId: string
+): Escalation | null {
+  const row = getDb()
+    .prepare(
+      "SELECT * FROM escalations WHERE owner_message_id = ? AND status = 'pending'"
+    )
+    .get(ownerMessageId) as Escalation | undefined;
+  return row ?? null;
+}
+
+export function getPendingEscalationById(id: number): Escalation | null {
+  const row = getDb()
+    .prepare("SELECT * FROM escalations WHERE id = ? AND status = 'pending'")
+    .get(id) as Escalation | undefined;
+  return row ?? null;
+}
+
+export function setEscalationOwnerMessageId(
+  id: number,
+  ownerMessageId: string
+): void {
+  getDb()
+    .prepare("UPDATE escalations SET owner_message_id = ? WHERE id = ?")
+    .run(ownerMessageId, id);
+}
+
+export function getOldestPendingEscalation(): Escalation | null {
+  const row = getDb()
+    .prepare(
+      "SELECT * FROM escalations WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1"
+    )
+    .get() as Escalation | undefined;
+  return row ?? null;
+}
+
+export function listPendingEscalations(): Escalation[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM escalations WHERE status = 'pending' ORDER BY created_at ASC"
+    )
+    .all() as Escalation[];
+}
+
+export function resolveEscalation(id: number, answer: string): void {
+  getDb()
+    .prepare(
+      "UPDATE escalations SET status = 'answered', answer = ?, answered_at = unixepoch() WHERE id = ?"
+    )
+    .run(answer, id);
 }

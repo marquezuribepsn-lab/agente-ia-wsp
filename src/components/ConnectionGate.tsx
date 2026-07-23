@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import type { ConversationWithPreview, ConversationMode } from "@/lib/db";
 import QRScreen, { type StatusResponse } from "./QRScreen";
-import DashboardHeader from "./DashboardHeader";
+import DashboardHeader, { type DashboardView } from "./DashboardHeader";
 import ConversationList from "./ConversationList";
 import ConversationPanel from "./ConversationPanel";
+import KnowledgeBase from "./KnowledgeBase";
 
 export default function ConnectionGate() {
   const [statusData, setStatusData] = useState<StatusResponse | null>(null);
@@ -13,6 +14,7 @@ export default function ConnectionGate() {
     []
   );
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [view, setView] = useState<DashboardView>("conversations");
 
   useEffect(() => {
     let cancelled = false;
@@ -78,42 +80,48 @@ export default function ConnectionGate() {
     <div className="flex h-screen flex-col">
       <DashboardHeader
         phone={statusData.phone ?? null}
+        view={view}
+        onViewChange={setView}
         onDisconnect={handleDisconnect}
       />
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="w-80 shrink-0 overflow-hidden border-r border-neutral-200 bg-white">
-          <ConversationList
-            conversations={conversations}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-          />
-        </aside>
-        <main className="flex-1 overflow-hidden">
-          {selectedConversation ? (
-            <ConversationPanel
-              key={selectedConversation.id}
-              conversation={selectedConversation}
-              onDeleted={() => {
-                setSelectedId(null);
-                setConversations((prev) =>
-                  prev.filter((c) => c.id !== selectedConversation.id)
-                );
-              }}
-              onModeChanged={(mode: ConversationMode) => {
-                setConversations((prev) =>
-                  prev.map((c) =>
-                    c.id === selectedConversation.id ? { ...c, mode } : c
-                  )
-                );
-              }}
+      {view === "knowledge" ? (
+        <KnowledgeBase />
+      ) : (
+        <div className="flex flex-1 overflow-hidden">
+          <aside className="w-80 shrink-0 overflow-hidden border-r border-neutral-200 bg-white">
+            <ConversationList
+              conversations={conversations}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
             />
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-neutral-400">
-              Elegí una conversación de la izquierda para ver los mensajes.
-            </div>
-          )}
-        </main>
-      </div>
+          </aside>
+          <main className="flex-1 overflow-hidden">
+            {selectedConversation ? (
+              <ConversationPanel
+                key={selectedConversation.id}
+                conversation={selectedConversation}
+                onDeleted={() => {
+                  setSelectedId(null);
+                  setConversations((prev) =>
+                    prev.filter((c) => c.id !== selectedConversation.id)
+                  );
+                }}
+                onModeChanged={(mode: ConversationMode) => {
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === selectedConversation.id ? { ...c, mode } : c
+                    )
+                  );
+                }}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-neutral-400">
+                Elegí una conversación de la izquierda para ver los mensajes.
+              </div>
+            )}
+          </main>
+        </div>
+      )}
     </div>
   );
 }

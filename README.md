@@ -154,7 +154,44 @@ reducir la probabilidad y la frecuencia, no eliminarla.
 
 Editá `src/lib/system-prompt.ts`. Ahí vive el `SYSTEM_PROMPT` que se le manda
 al LLM en cada conversación en modo IA — reemplazalo por el prompt de tu
-negocio (tono, información del producto, políticas, etc.).
+negocio (tono, información del producto, políticas, etc.). El resto del
+prompt (base de conocimiento, memoria del cliente, protocolo de
+escalamiento) se arma solo en `buildSystemPrompt()`, no hace falta tocarlo.
+
+## Base de conocimiento, memoria y escalamiento
+
+**Base de conocimiento:** en el dashboard, botón "Base de conocimiento" en
+el header. Subís archivos PDF, Word (`.docx`) o texto (`.txt`/`.md`) con
+información de tu negocio (catálogo, precios, políticas). Cada archivo se
+parte en fragmentos y se indexan con búsqueda de texto completo (FTS5,
+nativo de SQLite, sin costo de API extra). Cuando un cliente pregunta algo
+en modo IA, el bot busca los fragmentos más relevantes y se los pasa al LLM
+como contexto.
+
+**Memoria por cliente:** cada conversación tiene un campo `memory` que el
+LLM va completando solo. En la misma llamada que genera la respuesta (sin
+llamada extra al modelo), si el modelo detecta un dato nuevo digno de
+recordar sobre ESE cliente puntual (preferencias, compras previas, etc.),
+lo agrega con una línea `MEMORIA: <dato>` al final de su respuesta — el
+código la separa antes de mandarle el mensaje al cliente y la guarda. Se
+inyecta de vuelta en el prompt en conversaciones futuras con ese mismo
+cliente.
+
+**Escalamiento:** si el LLM no tiene con qué responder con confianza
+(marca su respuesta con `NO_SE: <resumen de la pregunta>` en vez de
+inventar), el bot:
+1. Le manda al cliente un mensaje de espera ("Dejame confirmar esa
+   información...").
+2. Te manda un WhatsApp a vos mismo (chat "Tú") con la pregunta.
+3. Cuando respondés **citando ese mensaje** (mantener presionado →
+   Responder) — o escribiendo `#<id> tu respuesta` si por algún motivo no
+   podés citar — el bot toma tu respuesta, le contesta al cliente original,
+   te confirma que ya lo hizo, y guarda la pregunta+respuesta en la base de
+   conocimiento para la próxima vez.
+
+Solo se acepta como respuesta un mensaje que cite explícitamente la
+pregunta (o el `#id`) — así una nota cualquiera que te mandes a vos mismo
+nunca se termina mandando por error a un cliente.
 
 ## Cómo funciona (resumen técnico)
 

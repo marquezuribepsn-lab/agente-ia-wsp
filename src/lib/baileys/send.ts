@@ -71,7 +71,7 @@ export async function sendHumanLike(
   sock: BaileysSocket,
   jid: string,
   text: string
-): Promise<void> {
+): ReturnType<BaileysSocket["sendMessage"]> {
   assertUnderRateLimit();
 
   const waitMs = claimSendSlot();
@@ -97,5 +97,5 @@ export async function sendHumanLike(
     // ignore
   }
 
-  await sock.sendMessage(jid, { text });
+  return sock.sendMessage(jid, { text });
 }
