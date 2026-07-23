@@ -1,0 +1,7 @@
+node_modules
+.next
+data
+auth
+.env.local
+.git
+*.tsbuildinfo
