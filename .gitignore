@@ -1,0 +1,30 @@
+# dependencias
+node_modules/
+
+# build de Next.js
+.next/
+out/
+
+# runtime local (gitignored a propósito, ver README)
+data/
+auth/
+
+# variables de entorno
+.env.local
+.env*.local
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# editor / OS
+.DS_Store
+Thumbs.db
+
+# config local de Claude Code (específica de esta máquina, no del proyecto)
+.claude/settings.local.json
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
