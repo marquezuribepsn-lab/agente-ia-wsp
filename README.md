@@ -9,6 +9,23 @@ leer el historial, intervenir manualmente y togglear cada chat entre modo
 Todo corre en `localhost`. La data vive en SQLite (`./data/messages.db`). La
 sesión de WhatsApp Web la guarda Baileys en `./auth/`.
 
+## App de escritorio (`desktop/`)
+
+Wrapper de Electron que abre el dashboard alojado en el servidor dentro de
+una ventana nativa, con ícono propio, en vez de tener que abrir el navegador
+y tipear la IP. Ver `desktop/main.js`.
+
+```bash
+cd desktop
+npm install
+cp .env.example .env   # completar DASHBOARD_URL, DASHBOARD_USER, DASHBOARD_PASSWORD
+npm start               # probar en modo desarrollo
+npm run dist             # genera el instalador en desktop/dist/*.exe
+```
+
+`desktop/.env` nunca se commitea — ahí quedan las credenciales del basic
+auth para que la app las autocomplete.
+
 ## Requisitos
 
 - Node.js **20.9+** (recomendado 22 LTS — ver `.nvmrc`)
