@@ -12,6 +12,10 @@ auth/
 # variables de entorno
 .env.local
 .env*.local
+desktop/.env
+
+# build de la app de escritorio (Electron)
+desktop/dist/
 
 # logs
 npm-debug.log*

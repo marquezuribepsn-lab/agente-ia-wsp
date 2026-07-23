@@ -1,0 +1,22 @@
+{
+  "name": "agente-whatsapp-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "App de escritorio que abre el dashboard del Agente WhatsApp alojado en el servidor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.agentewhatsapp.desktop",
+    "productName": "Agente WhatsApp",
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
