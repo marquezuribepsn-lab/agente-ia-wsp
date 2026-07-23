@@ -121,26 +121,62 @@ negocio (tono, información del producto, políticas, etc.).
   versión) para refrescar mensajes, lista de conversaciones y estado de
   conexión.
 
-## Deploy en producción (EasyPanel / Railway, sin Docker)
+## Deploy en producción (VPS con Docker)
 
-El repo ya incluye `Procfile`, `nixpacks.toml` y `.nvmrc` para un deploy vía
-buildpack (Nixpacks).
+El deploy real de este proyecto corre en una VPS (probado en Hostinger,
+Ubuntu 24.04) con Docker + Docker Compose directo — **sin EasyPanel ni
+ningún otro panel intermedio**. El repo incluye:
 
-**Volúmenes persistentes obligatorios:** `/app/data` y `/app/auth`. Sin
-ellos, cada redeploy borra las conversaciones guardadas Y obliga a
-re-escanear el QR.
+- `Dockerfile` (multi-stage: instala dependencias con `--ignore-scripts`,
+  builda Next.js, poda `devDependencies` para la imagen final).
+- `docker-compose.yml` — un solo servicio, puerto publicado configurable,
+  volúmenes bind-mount para `/app/data` y `/app/auth`, `restart:
+  unless-stopped`.
 
-## ⚠️ Seguridad — el dashboard NO tiene autenticación
+Pasos para desplegar en un servidor nuevo (Ubuntu + Docker + Docker Compose
+ya instalados):
 
-Esto es **bloqueante para producción**. Si desplegás este dashboard a
-internet tal cual, cualquiera con la URL puede leer todas tus conversaciones
-de WhatsApp y enviar mensajes haciéndose pasar por vos.
+```bash
+git clone https://github.com/marquezuribepsn-lab/agente-ia-wsp.git /opt/agente-whatsapp
+cd /opt/agente-whatsapp
+cp .env.example .env   # completar OPENROUTER_API_KEY, OPENROUTER_MODEL,
+                        # DASHBOARD_USER y DASHBOARD_PASSWORD
+docker compose up -d --build
+```
 
-Antes de exponerlo a internet, agregá autenticación a nivel de proxy:
-- Basic auth en Caddy/Nginx delante de la app, o
-- Cloudflare Access, o
-- Cualquier mecanismo de auth de tu plataforma de hosting (EasyPanel permite
-  configurar esto a nivel de servicio).
+**Volúmenes persistentes:** `docker-compose.yml` ya mapea `./data` y
+`./auth` (relativos a la carpeta del proyecto en el servidor) a
+`/app/data` y `/app/auth` dentro del contenedor. Sin esto, cada rebuild
+borra las conversaciones guardadas Y obliga a re-escanear el QR.
+
+**Puerto:** por defecto el compose publica el contenedor (puerto interno
+3000) en el **3001** del host, para no chocar con otros servicios. Ajustalo
+en `docker-compose.yml` si hace falta, y abrí el puerto correspondiente en
+el firewall (a nivel de VPS y, si tu proveedor lo tiene, también a nivel de
+red/hPanel — son capas separadas).
+
+**Dominio y SSL:** si más adelante conseguís un dominio, lo más simple es
+poner un reverse proxy (Caddy o Nginx + certbot) delante del puerto
+publicado para servir HTTPS. Sin dominio, el acceso queda por IP:puerto sin
+cifrar — el basic auth (ver abajo) sigue protegiendo las credenciales, pero
+viajan sin TLS, así que conseguí un dominio apenas puedas.
+
+`Procfile` y `nixpacks.toml` quedan en el repo como alternativa si en algún
+momento preferís desplegar en una plataforma tipo EasyPanel/Railway/Render
+en vez de una VPS pelada — no se usan en el deploy actual.
+
+## Seguridad — autenticación del dashboard
+
+El dashboard soporta HTTP Basic Auth vía las variables `DASHBOARD_USER` y
+`DASHBOARD_PASSWORD` (ver `src/proxy.ts`). Si estas variables no están
+seteadas, el dashboard queda **sin ninguna protección** — cualquiera con la
+URL puede leer las conversaciones de WhatsApp y enviar mensajes
+haciéndose pasar por vos. **Configurá siempre estas dos variables si vas a
+exponer el dashboard más allá de `localhost`.**
+
+Como capa extra (opcional pero recomendada si hay dominio): agregar
+Cloudflare Access o basic auth también a nivel de proxy (Caddy/Nginx)
+delante de la app.
 
 ## Troubleshooting
 
@@ -181,5 +217,5 @@ Antes de exponerlo a internet, agregá autenticación a nivel de proxy:
 - Auto-toggle a modo Humano cuando el bot detecta una frase específica (por
   ejemplo, regex sobre "derivarte con un asesor humano" en `handler.ts`).
 - WebSocket en vez de polling para actualizaciones en tiempo real.
-- Autenticación básica integrada en el propio Next.js (middleware), en vez
-  de depender de configurarla a nivel de proxy.
+- HTTPS automático (dominio + certbot/Caddy) documentado end-to-end una vez
+  que haya un dominio propio.
