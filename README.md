@@ -81,25 +81,57 @@ npm run start:all
 
 ## Precauciones anti-baneo
 
-WhatsApp puede marcar como spam (y eventualmente banear) a un número que
-responde de forma instantánea o manda mensajes en ráfaga — patrón típico de
-bot. Todo el envío saliente (respuestas de IA y mensajes humanos encolados)
-pasa por `src/lib/baileys/send.ts`, que aplica:
+WhatsApp puede forzar el cierre de sesión (o banear) a un número que se
+comporta como bot. Esto tiene dos frentes distintos — **el código solo
+cubre el primero**:
 
-- **Separación mínima entre envíos:** ~2.5-5s de espacio aleatorio entre
+### 1. Comportamiento de envío (cubierto por código)
+
+Todo el envío saliente (respuestas de IA y mensajes humanos encolados) pasa
+por `src/lib/baileys/send.ts`, que aplica:
+
+- **Separación mínima entre envíos:** ~4-8s de espacio aleatorio entre
   cualquier par de mensajes salientes, sin importar a qué conversación vayan.
 - **Simulación de "escribiendo...":** antes de mandar, el bot marca presencia
-  `composing` y espera un tiempo proporcional al largo del mensaje (1.2-6s)
+  `composing` y espera un tiempo proporcional al largo del mensaje (1.5-8s)
   antes de enviarlo.
+- **Techo duro de 30 mensajes/hora**: si algo (un bug, un loop del LLM)
+  intentara mandar de más, se corta ahí antes de que se vea como spam real.
 - **Marca los mensajes entrantes como leídos** (`readMessages`) — una cuenta
   humana real lee antes de responder.
-- `markOnlineOnConnect: false` (ya en `client.ts`): el bot no aparece
-  "en línea" todo el tiempo.
+- `markOnlineOnConnect: false` y `syncFullHistory: false` (en `client.ts`):
+  el bot no aparece "en línea" todo el tiempo ni descarga historial completo
+  al vincularse (comportamiento pesado/inusual para un dispositivo nuevo).
 
 Si en algún momento tenés mucho volumen de mensajes humanos encolados desde
 el dashboard, van a salir más lento de lo que entran a la cola — es
 intencional. Los valores de timing están al principio de `send.ts` si querés
 ajustarlos.
+
+### 2. Comportamiento de vinculación (operativo, NO es código)
+
+Esto pesa **igual o más** que el timing de los mensajes, y ningún código lo
+arregla:
+
+- **No re-vincules el dispositivo (escanear QR) más de lo estrictamente
+  necesario.** Cada desconexión + QR nuevo es una señal fuerte para la
+  detección de WhatsApp. Usá el botón "Desconectar" solo cuando de verdad
+  haga falta, no como parte de pruebas de rutina.
+- **Un solo dispositivo automatizado vinculado a la vez.** Si tenés el bot
+  corriendo en dos lugares (por ejemplo local Y en el servidor) al mismo
+  tiempo, desvinculá uno de los dos. Dos dispositivos "bot" simultáneos es
+  una señal más clara de automatización que uno solo.
+- **La IP del servidor importa.** Conexiones desde rangos de IP de
+  hosting/datacenter (como una VPS) son, en general, más sospechosas para
+  WhatsApp que una IP residencial. Esto no tiene solución de código — es un
+  riesgo estructural de auto-hospedar un cliente no oficial.
+- **Considerá usar un número dedicado para el bot**, idealmente registrado
+  como WhatsApp Business, en vez de tu número personal principal. Si ese
+  número tiene un problema, no te deja sin WhatsApp a vos.
+
+Ninguna de estas medidas garantiza cero riesgo — es un cliente no oficial de
+WhatsApp Web, y WhatsApp activamente trata de detectarlos. El objetivo es
+reducir la probabilidad y la frecuencia, no eliminarla.
 
 ## Personalizar el prompt del bot
 
