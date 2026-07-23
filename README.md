@@ -1,8 +1,9 @@
 # Agente WhatsApp
 
 Agente de WhatsApp local que se conecta a un número real vía Baileys (WhatsApp
-Web, no Meta API ni Twilio) y responde mensajes con un LLM a través de
-OpenRouter. Incluye un dashboard local (Next.js) para ver las conversaciones,
+Web, no Meta API ni Twilio) y responde mensajes con un LLM (cualquier
+proveedor compatible con la API de OpenAI: Groq, OpenRouter, Google Gemini,
+OpenAI directo, etc.). Incluye un dashboard local (Next.js) para ver las conversaciones,
 leer el historial, intervenir manualmente y togglear cada chat entre modo
 **IA** (responde el bot) y modo **Humano** (respondés vos desde el dashboard).
 
@@ -29,7 +30,10 @@ auth para que la app las autocomplete.
 ## Requisitos
 
 - Node.js **20.9+** (recomendado 22 LTS — ver `.nvmrc`)
-- Una cuenta de [OpenRouter](https://openrouter.ai) con créditos cargados
+- Una API key de un proveedor de LLM compatible con OpenAI. Recomendado
+  [Groq](https://console.groq.com) (gratis, sin tarjeta, límite generoso) —
+  alternativas: [OpenRouter](https://openrouter.ai) o
+  [Google Gemini](https://aistudio.google.com)
 - Un número de WhatsApp disponible para vincular como "dispositivo vinculado"
 
 ## Instalación
@@ -58,14 +62,17 @@ Copiá `.env.example` a `.env.local` (ya viene creado con valores vacíos) y
 completá:
 
 ```
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL=openai/gpt-4o-mini
+LLM_API_KEY=gsk_...
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=llama-3.3-70b-versatile
 ```
 
-**Recomendación:** usá `openai/gpt-4o-mini` ($0.15 por millón de tokens,
-centavos por mes en uso normal). Los modelos `:free` de OpenRouter tienen un
-límite muy estricto (50 requests/día sin créditos cargados) y van a fallar
-con error 429 apenas tengas tráfico real.
+**Recomendación:** [Groq](https://console.groq.com) — tier gratis real, sin
+tarjeta, límite generoso (~30 req/min) para un bot de un solo negocio. Los
+modelos `:free` de OpenRouter en cambio comparten un pool entre miles de
+usuarios y se saturan rápido con tráfico real (error 502/429). Si preferís
+OpenRouter con créditos cargados, usá `LLM_BASE_URL=https://openrouter.ai/api/v1`
+y `LLM_MODEL=openai/gpt-4o-mini` ($0.15 por millón de tokens).
 
 ## Correr en desarrollo
 
@@ -225,7 +232,7 @@ ya instalados):
 ```bash
 git clone https://github.com/marquezuribepsn-lab/agente-ia-wsp.git /opt/agente-whatsapp
 cd /opt/agente-whatsapp
-cp .env.example .env   # completar OPENROUTER_API_KEY, OPENROUTER_MODEL,
+cp .env.example .env   # completar LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
                         # DASHBOARD_USER y DASHBOARD_PASSWORD
 docker compose up -d --build
 ```
@@ -282,12 +289,16 @@ delante de la app.
   corriendo — sin el proceso bot, nunca se genera un QR. El endpoint
   `/api/connection/status` es defensivo (muestra el QR si existe aunque el
   status no sea exactamente `'qr'`), pero necesita que el bot esté vivo.
-- **`OPENROUTER_API_KEY` llega como `undefined` al bot:** asegurate de que
+- **`LLM_API_KEY` llega como `undefined` al bot:** asegurate de que
   `scripts/env-loader.ts` sea el **primer import** de `scripts/start-bot.ts`
   (los `import` de ES modules se hoistean al tope del archivo, así que el
   orden de declaración importa).
-- **429 al llamar al LLM:** el modelo `:free` de OpenRouter saturó su cuota
-  diaria. Cambiá `OPENROUTER_MODEL` a `openai/gpt-4o-mini` en `.env.local`.
+- **429/502 al llamar al LLM ("rate limit", "ResourceExhausted"):** se
+  saturó la cuota del proveedor/modelo. Con Groq gratis es raro pero puede
+  pasar con mucho tráfico; con el `:free` de OpenRouter es prácticamente
+  garantizado apenas hay uso real (es un pool compartido entre miles de
+  usuarios). Solución: cambiar a un modelo con más cupo (Groq, o OpenRouter
+  con créditos cargados) en `LLM_MODEL`/`LLM_BASE_URL`.
 - **Procesos zombies en Windows:** `Ctrl+C` no siempre mata los procesos
   hijos que levanta `tsx`/`concurrently`. Si el puerto queda ocupado o el
   bot sigue corriendo en segundo plano, buscalo con `tasklist | findstr node`

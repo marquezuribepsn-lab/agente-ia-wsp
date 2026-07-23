@@ -21,7 +21,7 @@ import {
   resolveEscalation,
   type Conversation,
 } from "../db";
-import { generateReply, generateFollowUpReply, type ParsedReply } from "../openrouter";
+import { generateReply, generateFollowUpReply, type ParsedReply } from "../llm";
 import { formatJidForDisplay } from "../format";
 
 const HOLDING_MESSAGE =
