@@ -50,7 +50,7 @@ export async function POST(req: Request, { params }: Ctx) {
 
   // El mensaje queda visible en el dashboard al instante (insert directo) y
   // se encola en outbox para que el proceso bot (otro proceso, sin memoria
-  // compartida) lo envíe vía Baileys en su próximo tick.
+  // compartida) lo envíe vía WhatsApp Web en su próximo tick.
   const message = insertMessage(id, "human", content);
   enqueueOutbox(id, convo.phone, content);
 

@@ -1,8 +1,8 @@
 import "./env-loader";
 import path from "node:path";
 import fs from "node:fs";
-import { start, shutdown, getSocket } from "../src/lib/baileys/client";
-import { sendHumanLike } from "../src/lib/baileys/send";
+import { start, shutdown, getClient } from "../src/lib/whatsapp/client";
+import { sendHumanLike } from "../src/lib/whatsapp/send";
 import { getPendingOutbox, markOutboxSent } from "../src/lib/db";
 
 const RESTART_FLAG = path.resolve(process.cwd(), "data", ".restart");
@@ -19,15 +19,15 @@ async function processOutbox(): Promise<void> {
   processingOutbox = true;
 
   try {
-    const sock = getSocket();
-    if (!sock) return;
+    const client = getClient();
+    if (!client) return;
 
     const pending = getPendingOutbox(20);
     for (const item of pending) {
-      // item.phone es el JID completo de WhatsApp (@s.whatsapp.net o @lid),
+      // item.phone es el JID completo de WhatsApp (@c.us o @lid),
       // no un número de teléfono suelto — ver handler.ts.
       try {
-        await sendHumanLike(sock, item.phone, item.content);
+        await sendHumanLike(client, item.phone, item.content);
         markOutboxSent(item.id);
         console.log(`[bot] → (outbox) Enviado a ${item.phone}`);
       } catch (err) {

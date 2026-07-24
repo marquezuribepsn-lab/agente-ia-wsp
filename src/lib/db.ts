@@ -136,7 +136,7 @@ export type ConversationMode = "AI" | "HUMAN";
 
 export interface Conversation {
   id: number;
-  /** JID completo de WhatsApp (ej. "549...@s.whatsapp.net" o "...@lid"), no un número suelto. */
+  /** JID completo de WhatsApp (ej. "549...@c.us" o "...@lid"), no un número suelto. */
   phone: string;
   name: string | null;
   mode: ConversationMode;

@@ -1,23 +1,22 @@
-import type { BaileysSocket } from "./client";
+import type { Message } from "whatsapp-web.js";
+import type { WhatsAppClient } from "./client";
 
-// Medidas anti-baneo: WhatsApp puede marcar como spam (y forzar un cierre de
-// sesión) a una cuenta que responde instantáneamente o dispara mensajes en
-// ráfaga (patrón típico de bot). Este módulo centraliza TODO el envío
-// saliente (respuestas de IA y mensajes humanos encolados) para garantizar:
+// Medidas anti-baneo: WhatsApp puede forzar el cierre de sesión (y banear) a
+// una cuenta que responde instantáneamente o dispara mensajes en ráfaga
+// (patrón típico de bot). Este módulo centraliza TODO el envío saliente
+// (respuestas de IA y mensajes humanos encolados) para garantizar:
 //   1. Una separación mínima aleatoria entre CUALQUIER par de mensajes
 //      salientes, sin importar a qué conversación vayan.
 //   2. Un delay de "escribiendo..." proporcional al largo del mensaje antes
-//      de enviarlo, con presencia (composing/paused) real.
+//      de enviarlo, con presencia (typing) real.
 //   3. Un techo duro de mensajes por hora: si algo (un bug, un loop del LLM)
 //      generara envíos en cantidad, esto corta antes de que se vuelva un
 //      patrón de spam real.
 //
 // OJO: esto reduce el riesgo de baneo por comportamiento de ENVÍO, pero no
 // es lo único que importa. Re-vincular el dispositivo muchas veces seguidas
-// (escanear QR, desconectar y reconectar) y tener más de un dispositivo
-// automatizado linkeado a la vez son señales igual o más fuertes para la
-// detección de WhatsApp — evitar eso es responsabilidad de cómo se opera el
-// bot, no algo que este archivo pueda resolver.
+// y tener más de un dispositivo automatizado linkeado a la vez son señales
+// igual o más fuertes para la detección de WhatsApp.
 
 const MIN_GAP_MS = 4000;
 const EXTRA_JITTER_MS = 4000;
@@ -30,6 +29,25 @@ const WINDOW_MS = 60 * 60 * 1000; // 1 hora
 
 let nextAllowedSendAt = 0;
 const recentSendTimestamps: number[] = [];
+
+// IDs de mensajes que mandamos nosotros mismos, para poder distinguir en el
+// evento 'message_create' un mensaje propio (eco de nuestro propio envío) de
+// una respuesta real que el dueño tipeó en su teléfono en el chat consigo
+// mismo — ambos llegan como fromMe=true.
+const ownSentMessageIds = new Set<string>();
+const OWN_SENT_IDS_MAX = 200;
+
+export function isOwnSentMessage(messageId: string): boolean {
+  return ownSentMessageIds.has(messageId);
+}
+
+function trackOwnSentMessage(messageId: string): void {
+  ownSentMessageIds.add(messageId);
+  if (ownSentMessageIds.size > OWN_SENT_IDS_MAX) {
+    const oldest = ownSentMessageIds.values().next().value;
+    if (oldest !== undefined) ownSentMessageIds.delete(oldest);
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,10 +86,10 @@ function assertUnderRateLimit(): void {
 }
 
 export async function sendHumanLike(
-  sock: BaileysSocket,
-  jid: string,
+  client: WhatsAppClient,
+  chatId: string,
   text: string
-): ReturnType<BaileysSocket["sendMessage"]> {
+): Promise<Message> {
   assertUnderRateLimit();
 
   const waitMs = claimSendSlot();
@@ -84,18 +102,18 @@ export async function sendHumanLike(
   );
 
   try {
-    await sock.sendPresenceUpdate("composing", jid);
-  } catch {
-    // no es crítico si falla la presencia, seguimos igual con el envío
+    const chat = await client.getChatById(chatId);
+    await chat.sendStateTyping();
+    await sleep(typingMs);
+    await chat.clearState();
+  } catch (err) {
+    // no es crítico si falla la simulación de "escribiendo", seguimos
+    // igual con el envío
+    console.warn("[bot] No se pudo simular estado de escritura:", err);
+    await sleep(typingMs);
   }
 
-  await sleep(typingMs);
-
-  try {
-    await sock.sendPresenceUpdate("paused", jid);
-  } catch {
-    // ignore
-  }
-
-  return sock.sendMessage(jid, { text });
+  const sent = await client.sendMessage(chatId, text);
+  trackOwnSentMessage(sent.id._serialized);
+  return sent;
 }

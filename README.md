@@ -1,14 +1,28 @@
 # Agente WhatsApp
 
-Agente de WhatsApp local que se conecta a un número real vía Baileys (WhatsApp
-Web, no Meta API ni Twilio) y responde mensajes con un LLM (cualquier
-proveedor compatible con la API de OpenAI: Groq, OpenRouter, Google Gemini,
-OpenAI directo, etc.). Incluye un dashboard local (Next.js) para ver las conversaciones,
-leer el historial, intervenir manualmente y togglear cada chat entre modo
-**IA** (responde el bot) y modo **Humano** (respondés vos desde el dashboard).
+Agente de WhatsApp local que se conecta a un número real vía
+[whatsapp-web.js](https://wwebjs.dev) (automatiza un Chrome real corriendo
+la página verdadera de WhatsApp Web — no Meta API ni Twilio) y responde
+mensajes con un LLM (cualquier proveedor compatible con la API de OpenAI:
+Groq, OpenRouter, Google Gemini, OpenAI directo, etc.). Incluye un dashboard
+local (Next.js) para ver las conversaciones, leer el historial, intervenir
+manualmente y togglear cada chat entre modo **IA** (responde el bot) y modo
+**Humano** (respondés vos desde el dashboard).
 
 Todo corre en `localhost`. La data vive en SQLite (`./data/messages.db`). La
-sesión de WhatsApp Web la guarda Baileys en `./auth/`.
+sesión de WhatsApp Web la guarda whatsapp-web.js en `./auth/`.
+
+> **¿Por qué whatsapp-web.js y no Baileys?** Este proyecto arrancó con
+> Baileys (un cliente no oficial que reimplementa el protocolo de WhatsApp
+> Web por ingeniería inversa). Baileys tiene, al momento de escribir esto,
+> un problema conocido y sin resolver: la sesión se cierra sola (código 401)
+> a los segundos de conectar o de mandar el primer mensaje, en cualquier
+> número y cualquier infraestructura — reportado por otros usuarios en
+> [GitHub](https://github.com/WhiskeySockets/Baileys/issues/2248). Como un
+> login por navegador real se mantenía estable en el mismo equipo,
+> migramos a whatsapp-web.js, que automatiza ese navegador real (Puppeteer)
+> en vez de reimplementar el protocolo. Ver la sección "Troubleshooting"
+> para más detalle.
 
 ## App de escritorio (`desktop/`)
 
@@ -56,6 +70,17 @@ Instalá con `npm install --ignore-scripts` (o simplemente `npm install`, el
 `.npmrc` del proyecto ya lo fuerza). Tarda ~1 min por el tamaño de las
 dependencias nativas.
 
+Después, bajá el Chromium que necesita whatsapp-web.js/Puppeteer (el
+`--ignore-scripts` de arriba salta la descarga automática, así que hay que
+pedirla a mano una vez):
+
+```bash
+npm run setup:chromium
+```
+
+En Docker/VPS no hace falta este paso — el `Dockerfile` instala Chromium
+del sistema vía `apt` en su lugar (más liviano, ver sección de Deploy).
+
 ## Configuración
 
 Copiá `.env.example` a `.env.local` (ya viene creado con valores vacíos) y
@@ -79,7 +104,7 @@ y `LLM_MODEL=openai/gpt-4o-mini` ($0.15 por millón de tokens).
 Necesitás **dos procesos** corriendo en paralelo, en dos terminales:
 
 ```bash
-npm run start:bot   # levanta Baileys
+npm run start:bot   # levanta el bot (whatsapp-web.js)
 npm run dev          # levanta el dashboard en localhost:3000
 ```
 
@@ -112,20 +137,17 @@ cubre el primero**:
 ### 1. Comportamiento de envío (cubierto por código)
 
 Todo el envío saliente (respuestas de IA y mensajes humanos encolados) pasa
-por `src/lib/baileys/send.ts`, que aplica:
+por `src/lib/whatsapp/send.ts`, que aplica:
 
 - **Separación mínima entre envíos:** ~4-8s de espacio aleatorio entre
   cualquier par de mensajes salientes, sin importar a qué conversación vayan.
-- **Simulación de "escribiendo...":** antes de mandar, el bot marca presencia
-  `composing` y espera un tiempo proporcional al largo del mensaje (1.5-8s)
-  antes de enviarlo.
+- **Simulación de "escribiendo...":** antes de mandar, el bot marca estado
+  `typing` en el chat y espera un tiempo proporcional al largo del mensaje
+  (1.5-8s) antes de enviarlo.
 - **Techo duro de 30 mensajes/hora**: si algo (un bug, un loop del LLM)
   intentara mandar de más, se corta ahí antes de que se vea como spam real.
-- **Marca los mensajes entrantes como leídos** (`readMessages`) — una cuenta
-  humana real lee antes de responder.
-- `markOnlineOnConnect: false` y `syncFullHistory: false` (en `client.ts`):
-  el bot no aparece "en línea" todo el tiempo ni descarga historial completo
-  al vincularse (comportamiento pesado/inusual para un dispositivo nuevo).
+- **Marca los mensajes entrantes como leídos** (`chat.sendSeen()`) — una
+  cuenta humana real lee antes de responder.
 
 Si en algún momento tenés mucho volumen de mensajes humanos encolados desde
 el dashboard, van a salir más lento de lo que entran a la cola — es
@@ -202,14 +224,16 @@ nunca se termina mandando por error a un cliente.
 
 ## Cómo funciona (resumen técnico)
 
-- **Baileys** corre en un proceso aparte (`scripts/start-bot.ts`), separado
-  del proceso de Next.js. No comparten memoria.
+- **whatsapp-web.js** corre en un proceso aparte (`scripts/start-bot.ts`),
+  separado del proceso de Next.js. No comparten memoria. Internamente
+  levanta un Chrome headless (Puppeteer) que corre la página real de
+  WhatsApp Web.
 - **SQLite** (`./data/messages.db`, modo WAL) es el punto de encuentro entre
   ambos procesos: conversaciones, mensajes, estado de conexión y una tabla
   `outbox` para los mensajes que salen desde el dashboard en modo Humano.
 - Cuando enviás un mensaje desde el dashboard (modo Humano), la API lo
   guarda al instante en `messages` y lo encola en `outbox`. El proceso bot
-  revisa `outbox` cada 2s y lo envía por Baileys.
+  revisa `outbox` cada 2s y lo envía por WhatsApp Web.
 - El dashboard hace **polling cada 2 segundos** (no WebSocket en esta
   versión) para refrescar mensajes, lista de conversaciones y estado de
   conexión.
@@ -221,7 +245,8 @@ Ubuntu 24.04) con Docker + Docker Compose directo — **sin EasyPanel ni
 ningún otro panel intermedio**. El repo incluye:
 
 - `Dockerfile` (multi-stage: instala dependencias con `--ignore-scripts`,
-  builda Next.js, poda `devDependencies` para la imagen final).
+  builda Next.js, poda `devDependencies`, instala Chromium del sistema vía
+  `apt` para whatsapp-web.js/Puppeteer en la imagen final).
 - `docker-compose.yml` — un solo servicio, puerto publicado configurable,
   volúmenes bind-mount para `/app/data` y `/app/auth`, `restart:
   unless-stopped`.
@@ -273,18 +298,22 @@ delante de la app.
 
 ## Troubleshooting
 
-- **Código 405 al conectar:** versión de Baileys desactualizada respecto al
-  protocolo de WhatsApp Web. Ya está resuelto en el código
-  (`fetchLatestBaileysVersion()` se llama siempre al arrancar), pero si
-  persiste, actualizá `@whiskeysockets/baileys`.
-- **Código 440 en loop:** WhatsApp no reconoce el fingerprint del
-  dispositivo. Verificá que `src/lib/baileys/client.ts` siga usando
-  `Browsers.macOS('Desktop')` y no un browser fingerprint custom. Si
-  persiste, en tu teléfono andá a Configuración → Dispositivos vinculados y
-  borrá sesiones viejas de pruebas anteriores. Si sigue sin funcionar,
-  probá cambiar de IP del servidor o esperar ~24h.
-- **Código 515:** es normal, es la señal de pairing exitoso. El bot
-  reconecta solo.
+- **La sesión se cierra sola (reason `LOGOUT`) a los segundos de conectar o
+  de mandar el primer mensaje:** esto pasaba con Baileys por un bug de
+  compatibilidad de protocolo — la razón por la que migramos a
+  whatsapp-web.js. Si volviera a pasar acá, revisá primero si es un
+  problema puntual de whatsapp-web.js buscando el código de error en su
+  [tracker de issues](https://github.com/pedroslopez/whatsapp-web.js/issues)
+  antes de asumir que es tu cuenta.
+- **"Vinculación de dispositivos bloqueada por X horas" en WhatsApp:** pasa
+  si escaneás/reescaneás QR muchas veces seguidas en poco tiempo — WhatsApp
+  lo toma como patrón sospechoso de vinculación. No hay forma de saltear el
+  bloqueo; hay que esperar. Evitalo escaneando una sola vez por sesión de
+  pruebas, no en loop.
+- **Puppeteer no encuentra Chrome / falla al lanzar el navegador:** en local
+  corré `npm run setup:chromium`. En Docker, confirmá que la imagen instaló
+  `chromium` vía `apt` (ver `Dockerfile`) y que `PUPPETEER_EXECUTABLE_PATH`
+  apunta a `/usr/bin/chromium`.
 - **El QR no aparece en el dashboard:** revisá que `npm run start:bot` esté
   corriendo — sin el proceso bot, nunca se genera un QR. El endpoint
   `/api/connection/status` es defensivo (muestra el QR si existe aunque el
